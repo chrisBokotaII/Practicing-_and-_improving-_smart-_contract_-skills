@@ -8,7 +8,6 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 interface IERC20 {
     function balanceOf(address account) external view returns (uint256);
 
-    function transfer(address recipient, uint256 amount) external returns (bool);
     function safeMint(address to, uint256 amount) external;
 }
 
@@ -20,6 +19,7 @@ contract FundRising is Ownable, ReentrancyGuard {
     uint256 public rewardRate;
     uint256 public constant MIN_DONATION = 0.5 ether; 
     bool public closed;
+    bool public reached;
 mapping(address => uint) public donorBalances;
 mapping(address => bool) public rewardsClaimed;
 
@@ -67,6 +67,9 @@ receive() external payable {
         emit donated(msg.sender, msg.value, block.timestamp);
     }
         function getAmountToReachGoal() public view returns (uint) {
+             if (raised >= goal) {
+        return 0; 
+    }
             return goal - raised;
         }
 
@@ -96,6 +99,7 @@ function emergencyWithdraw(uint amount) external onlyOwner requireClosed() nonRe
             uint amount = raised;
             raised = 0;
             payable(beneficiary).transfer(amount);
+            reached = true;
             emit FundsSentToBeneficiary(beneficiary, amount);
         }
 
@@ -104,7 +108,7 @@ function emergencyWithdraw(uint amount) external onlyOwner requireClosed() nonRe
     }
    function claimReward(address _token) external requireClosed() nonReentrant {
     require(DurationTime < block.timestamp, "Time is not over");
-    require(raised >= goal, "Goal not reached");
+    require(reached, "Goal not reached");
 
     require(!rewardsClaimed[msg.sender], "Reward already claimed");
 
@@ -114,7 +118,7 @@ function emergencyWithdraw(uint amount) external onlyOwner requireClosed() nonRe
     uint tokenAmount = donorBalance * rewardRate;  // Calculate reward amount
 
     IERC20 token = IERC20(_token);
-    require(token.transfer(msg.sender, tokenAmount), "Token transfer failed");
+  token.safeMint(msg.sender, tokenAmount);  // Mint reward tokens
 
     rewardsClaimed[msg.sender] = true;  // Mark reward as claimed
 

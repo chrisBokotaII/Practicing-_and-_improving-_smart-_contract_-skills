@@ -13,114 +13,173 @@ describe("Lock", function () {
   async function deployOneYearLockFixture() {
     const ONE_YEAR_IN_SECS = 365 * 24 * 60 * 60;
     const ONE_GWEI = 1_000_000_000;
+    const goal = hre.ethers.parseEther("20");
 
     const lockedAmount = ONE_GWEI;
     const unlockTime = (await time.latest()) + ONE_YEAR_IN_SECS;
 
     // Contracts are deployed using the first signer/account by default
-    const [owner, otherAccount] = await hre.ethers.getSigners();
+    const [owner, otherAccount, beneficiary, donor1, donor2, donor3, donor4] =
+      await hre.ethers.getSigners();
 
-    const Lock = await hre.ethers.getContractFactory("Lock");
-    const lock = await Lock.deploy(unlockTime, { value: lockedAmount });
+    const FundRising = await hre.ethers.getContractFactory("FundRising");
+    const fundrising = await FundRising.connect(owner).deploy(
+      unlockTime,
+      goal,
+      beneficiary.address,
+      5
+    );
+    const Token = await hre.ethers.getContractFactory("FundRisingT");
+    const token = await Token.deploy(fundrising.target);
 
-    return { lock, unlockTime, lockedAmount, owner, otherAccount };
+    return {
+      fundrising,
+      unlockTime,
+      lockedAmount,
+      owner,
+      otherAccount,
+      beneficiary,
+      donor1,
+      donor2,
+      donor3,
+      donor4,
+      token,
+    };
   }
 
   describe("Deployment", function () {
-    it("Should set the right unlockTime", async function () {
-      const { lock, unlockTime } = await loadFixture(deployOneYearLockFixture);
+    it("Should deploy", async function () {
+      const { fundrising, token } = await loadFixture(deployOneYearLockFixture);
 
-      expect(await lock.unlockTime()).to.equal(unlockTime);
+      expect(token.target).to.be.properAddress;
+      expect(fundrising.target).to.be.properAddress;
     });
 
     it("Should set the right owner", async function () {
-      const { lock, owner } = await loadFixture(deployOneYearLockFixture);
-
-      expect(await lock.owner()).to.equal(owner.address);
-    });
-
-    it("Should receive and store the funds to lock", async function () {
-      const { lock, lockedAmount } = await loadFixture(
+      const { fundrising, token, owner } = await loadFixture(
         deployOneYearLockFixture
       );
 
-      expect(await hre.ethers.provider.getBalance(lock.target)).to.equal(
-        lockedAmount
+      expect(await fundrising.owner()).to.equal(owner.address);
+      expect(await token.owner()).to.equal(fundrising.target);
+    });
+
+    it("Should receive and store the funds of donation", async function () {
+      const { fundrising, donor1, donor2, donor3, donor4 } = await loadFixture(
+        deployOneYearLockFixture
       );
-    });
+      const donation = hre.ethers.parseEther("5");
+      await fundrising.connect(donor1).donate({ value: donation });
+      await fundrising.connect(donor2).donate({ value: donation });
+      await fundrising.connect(donor3).donate({ value: donation });
+      await fundrising.connect(donor4).donate({ value: donation });
 
-    it("Should fail if the unlockTime is not in the future", async function () {
-      // We don't use the fixture here because we want a different deployment
-      const latestTime = await time.latest();
-      const Lock = await hre.ethers.getContractFactory("Lock");
-      await expect(Lock.deploy(latestTime, { value: 1 })).to.be.revertedWith(
-        "Unlock time should be in the future"
+      expect(await hre.ethers.provider.getBalance(fundrising.target)).to.equal(
+        hre.ethers.parseEther("20")
       );
+      expect(await fundrising.donorBalances(donor1.address)).to.equal(donation);
     });
-  });
+    describe("success", function () {
+      it("should transfer to the beneficiary", async function () {
+        const {
+          fundrising,
+          token,
+          owner,
+          donor1,
+          donor2,
+          donor3,
+          donor4,
+          unlockTime,
+          beneficiary,
+        } = await loadFixture(deployOneYearLockFixture);
+        const donation = hre.ethers.parseEther("5");
+        await fundrising.connect(donor1).donate({ value: donation });
+        await fundrising.connect(donor2).donate({ value: donation });
+        await fundrising.connect(donor3).donate({ value: donation });
+        await fundrising.connect(donor4).donate({ value: donation });
+        await fundrising.connect(donor1).donate({ value: donation });
 
-  describe("Withdrawals", function () {
-    describe("Validations", function () {
-      it("Should revert with the right error if called too soon", async function () {
-        const { lock } = await loadFixture(deployOneYearLockFixture);
-
-        await expect(lock.withdraw()).to.be.revertedWith(
-          "You can't withdraw yet"
-        );
-      });
-
-      it("Should revert with the right error if called from another account", async function () {
-        const { lock, unlockTime, otherAccount } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        // We can increase the time in Hardhat Network
         await time.increaseTo(unlockTime);
-
-        // We use lock.connect() to send a transaction from another account
-        await expect(lock.connect(otherAccount).withdraw()).to.be.revertedWith(
-          "You aren't the owner"
+        await fundrising.connect(owner).close();
+        console.log(await fundrising.raised());
+        console.log(await fundrising.goal());
+        console.log(await fundrising.getAmountToReachGoal());
+        const beneficiaryBalance = await hre.ethers.provider.getBalance(
+          beneficiary.address
         );
+
+        await fundrising.connect(owner).sentToBeneficiary();
+        expect(
+          await hre.ethers.provider.getBalance(beneficiary.address)
+        ).to.equal(hre.ethers.parseEther("25") + beneficiaryBalance);
+        const claimToken = await fundrising
+          .connect(donor1)
+          .claimReward(token.target);
+        const claimToken2 = await fundrising
+          .connect(donor2)
+          .claimReward(token.target);
+        expect(await token.balanceOf(donor1.address)).to.not.equal(0);
       });
+      it("should refund donors", async function () {
+        const {
+          fundrising,
+          token,
+          owner,
+          donor1,
+          donor2,
+          donor3,
+          donor4,
+          unlockTime,
+          beneficiary,
+        } = await loadFixture(deployOneYearLockFixture);
+        const donation = hre.ethers.parseEther("5");
+        await fundrising.connect(donor1).donate({ value: donation });
+        await fundrising.connect(donor2).donate({ value: donation });
+        await fundrising.connect(donor3).donate({ value: donation });
 
-      it("Shouldn't fail if the unlockTime has arrived and the owner calls it", async function () {
-        const { lock, unlockTime } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        // Transactions are sent using the first signer by default
         await time.increaseTo(unlockTime);
+        await fundrising.connect(owner).close();
+        console.log(await fundrising.raised());
+        console.log(await fundrising.goal());
+        console.log(await fundrising.getAmountToReachGoal());
+        const donor1Balance = await hre.ethers.provider.getBalance(
+          donor1.address
+        );
+        await fundrising.connect(donor1).claimRefund();
 
-        await expect(lock.withdraw()).not.to.be.reverted;
+        expect(await fundrising.donorBalances(donor1.address)).to.equal(0);
       });
     });
-
-    describe("Events", function () {
-      it("Should emit an event on withdrawals", async function () {
-        const { lock, unlockTime, lockedAmount } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw())
-          .to.emit(lock, "Withdrawal")
-          .withArgs(lockedAmount, anyValue); // We accept any value as `when` arg
+    describe("Withdrawals", function () {
+      describe("Validations", function () {
+        it("Should revert with the right error if called too soon", async function () {
+          const { fundrising } = await loadFixture(deployOneYearLockFixture);
+          await expect(fundrising.sentToBeneficiary()).to.be.revertedWith(
+            "Time is not over"
+          );
+        });
+        it("Should revert with the right error if called from another account", async function () {
+          const { fundrising, unlockTime, otherAccount } = await loadFixture(
+            deployOneYearLockFixture
+          );
+          // We can increase the time in Hardhat Network
+          await time.increaseTo(unlockTime);
+          // We use lock.connect() to send a transaction from another account
+          await expect(fundrising.connect(otherAccount).close()).to.be.reverted;
+        });
       });
-    });
-
-    describe("Transfers", function () {
-      it("Should transfer the funds to the owner", async function () {
-        const { lock, unlockTime, lockedAmount, owner } = await loadFixture(
-          deployOneYearLockFixture
-        );
-
-        await time.increaseTo(unlockTime);
-
-        await expect(lock.withdraw()).to.changeEtherBalances(
-          [owner, lock],
-          [lockedAmount, -lockedAmount]
-        );
+      describe("Events", function () {
+        it("Should emit an event on deposit", async function () {
+          const { fundrising, donor1, unlockTime, lockedAmount } =
+            await loadFixture(deployOneYearLockFixture);
+          const donation = hre.ethers.parseEther("5");
+          await fundrising.connect(donor1).donate({ value: donation });
+          const filter = fundrising.filters.donated();
+          const event = await fundrising.queryFilter(filter);
+          expect(event.length).to.equal(1);
+          expect(event[0].args[0]).to.equal(donor1.address);
+          expect(event[0].args[1]).to.equal(donation);
+        });
       });
     });
   });
